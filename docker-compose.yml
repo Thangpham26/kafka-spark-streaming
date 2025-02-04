@@ -1,0 +1,119 @@
+version: '3'
+x-airflow-common:
+  &airflow-common
+  image: apache/airflow:2.0.0
+  environment:
+    - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+    - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres:5432/airflow
+    - AIRFLOW__CORE__FERNET_KEY=FB0o_zt4e3Ziq3LdUUO7F2Z95cvFFx16hU8jTeR1ASM=
+    - AIRFLOW__CORE__LOAD_EXAMPLES=False
+    - AIRFLOW__CORE__LOGGING_LEVEL=INFO
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./airflow-data/logs:/opt/airflow/logs
+    - ./airflow-data/plugins:/opt/airflow/plugins
+    - ./airflow-data/airflow.cfg:/opt/airlfow/airflow.cfg
+  depends_on:
+    - postgres
+
+networks:
+  local-kafka:
+    driver: bridge
+
+services:
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+    restart: always 
+  airflow-init:
+    << : *airflow-common
+    container_name: airflow_init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - airflow users list || ( airflow db init &&
+        airflow users create
+          --role Admin
+          --username airflow
+          --password airflow
+          --email airflow@airflow.com
+          --firstname airflow
+          --lastname airflow )
+    restart: on-failure
+
+  airflow-webserver:
+    << : *airflow-common
+    command: airflow webserver
+    ports:
+      - 8080:8080
+    container_name: airflow_webserver
+    restart: always
+
+  airflow-scheduler:
+    << : *airflow-common
+    command: airflow scheduler
+    container_name: airflow_scheduler
+    restart: always
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.0.1
+    container_name: zookeeper
+    networks:
+      - local-kafka
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  broker:
+    image: confluentinc/cp-kafka:7.0.1
+    container_name: broker
+    networks:
+      - local-kafka
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_LISTENERS: PLAINTEXT_INTERNAL://0.0.0.0:29092,PLAINTEXT_C://0.0.0.0:9093,PLAINTEXT_L://0.0.0.0:9092,
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_INTERNAL://broker:29092,PLAINTEXT_L://localhost:9092,PLAINTEXT_C://broker:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT_INTERNAL:PLAINTEXT,PLAINTEXT_L:PLAINTEXT,PLAINTEXT_C:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui
+    container_name: kafka-ui
+    networks:
+      - local-kafka
+    depends_on: 
+      - broker
+    ports:
+      - "7777:8080"
+    restart: always
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=broker
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=broker:9093
+      - KAFKA_CLUSTERS_0_ZOOKEEPER=zookeeper:2181
+
+  cassandra_db:
+    image: cassandra:latest
+    container_name: cassandra
+    hostname: cassandra
+    ports:
+      - "9042:9042"
+    environment:
+      - MAX_HEAP_SIZE=512M
+      - HEAP_NEWSIZE=100M
+      - CASSANDRA_USERNAME=cassandra
+      - CASSANDRA_PASSWORD=cassandra  
